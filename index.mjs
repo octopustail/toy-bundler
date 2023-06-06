@@ -50,6 +50,8 @@ const seen = new Set();
 const modules = new Map();
 const queue = [entryPoint];
 
+let id = 0;
+
 while (queue.length) {
     const module = queue.shift();
 
@@ -69,12 +71,11 @@ while (queue.length) {
                 resolver.resolveModule(module, dependencyName)
             ])
     )
-    console.log('dependencyMap', dependencyMap);
     const code = fs.readFileSync(module, 'utf8');
 
-    const moduleBody = code.match(/module\.exports\s+=\s+(.*?);/)?.[1] || '';
     const metadata = {
-        code: moduleBody || code,
+        id: id++,
+        code,
         dependencyMap,
     };
     modules.set(module, metadata);
@@ -86,18 +87,32 @@ while (queue.length) {
 console.log(chalk.bold(`❯ Building ${chalk.blue(entryPoint)}`))
 
 console.log(chalk.bold(`❯ Serializing bundle`));
+const wrapModule = (id, code) => `define(${id}, function(module, exports, require) {\n${code}});`;
+
+const output = [];
+
 for (const [_, metadata] of Array.from(modules).reverse()) {
-    let { code } = metadata;
+    let { id, code } = metadata;
     for (const [dependencyName, dependencyPath] of metadata.dependencyMap) {
+        const dependency = modules.get(dependencyPath);
         code = code.replace(
             new RegExp(
                 // Escape `.` and `/`.
                 `require\\(('|")${dependencyName.replace(/[\/.]/g, '\\$&')}\\1\\)`,
             ),
-            modules.get(dependencyPath).code
+            `require(${dependency.id})`,
         )
     }
-    metadata.code = code;
+
+    output.push(wrapModule(id, code))
 }
 
-console.log(modules.get(entryPoint).code)
+// Add the `require`-runtime at the beginning of our bundle.
+output.unshift(fs.readFileSync('./require.js', 'utf8'));
+// And require the entry point at the end of the bundle.
+output.push(['requireModule(0);']);
+// Write it to stdout.
+
+if (options.output) {
+    fs.writeFileSync(options.output, output.join('\n', 'uft8'));
+}
