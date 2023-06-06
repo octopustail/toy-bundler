@@ -7,7 +7,7 @@ import chalk from "chalk";
 import yargs from "yargs";
 import Resolver from "jest-resolve";
 import fs from 'fs';
-
+import { Worker } from "jest-worker";
 
 const options = yargs(process.argv).argv;
 const entryPoint = resolve(process.cwd(), options.entryPoint);
@@ -89,30 +89,46 @@ console.log(chalk.bold(`❯ Building ${chalk.blue(entryPoint)}`))
 console.log(chalk.bold(`❯ Serializing bundle`));
 const wrapModule = (id, code) => `define(${id}, function(module, exports, require) {\n${code}});`;
 
-const output = [];
-
-for (const [_, metadata] of Array.from(modules).reverse()) {
-    let { id, code } = metadata;
-    for (const [dependencyName, dependencyPath] of metadata.dependencyMap) {
-        const dependency = modules.get(dependencyPath);
-        code = code.replace(
-            new RegExp(
-                // Escape `.` and `/`.
-                `require\\(('|")${dependencyName.replace(/[\/.]/g, '\\$&')}\\1\\)`,
-            ),
-            `require(${dependency.id})`,
-        )
+const worker = new Worker(
+    join(dirname(fileURLToPath(import.meta.url)), 'worker.js'),
+    {
+        enableWorkerThreads: true,
     }
+)
 
-    output.push(wrapModule(id, code))
-}
+const results = await Promise.all(
+    Array.from(modules)
+        .reverse()
+        .map(async ([_, metadata]) => {
+            let { id, code } = metadata;
+            ({code} = await worker.transformFile(code));
+            console.log('code', code)
+            for (const [dependencyName, dependencyPath] of metadata.dependencyMap) {
+                const dependency = modules.get(dependencyPath);
+                code = code.replace(
+                    new RegExp(
+                        // Escape `.` and `/`.
+                        `require\\(('|")${dependencyName.replace(/[\/.]/g, '\\$&')}\\1\\)`,
+                    ),
+                    `require(${dependency.id})`,
+                )
+            }
 
-// Add the `require`-runtime at the beginning of our bundle.
-output.unshift(fs.readFileSync('./require.js', 'utf8'));
-// And require the entry point at the end of the bundle.
-output.push(['requireModule(0);']);
-// Write it to stdout.
+            return wrapModule(id, code);
+        })
+).catch(e=>{
+    console.log(e)
+})
+
+worker.end()
+
+
+const output = [
+    fs.readFileSync('./require.js', 'utf8'),
+    ...results,
+    'requireModule(0);'
+].join('\n')
 
 if (options.output) {
-    fs.writeFileSync(options.output, output.join('\n', 'uft8'));
+    fs.writeFileSync(options.output, output);
 }
