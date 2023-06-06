@@ -1,0 +1,38 @@
+import JestHasteMap from "jest-haste-map";
+import { cpus } from 'os';
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
+import { resolve } from "path";
+import chalk from "chalk";
+import yargs from "yargs";
+import { ChildProcess } from "child_process";
+
+const options = yargs(process.argv).argv;
+const entryPoint = resolve(process.cwd(), options.entryPoint);
+
+
+const root = join(dirname(fileURLToPath(import.meta.url)), 'product');
+
+const hasteMapOptions = {
+    extensions: ['js'],
+    maxWorkers: cpus().length,
+    name: 'jest-bundler',
+    platforms: [],
+    rootDir: root,
+    roots: [root],
+}
+
+const hasteMap = new JestHasteMap.default(hasteMapOptions);
+
+await hasteMap.setupCachePath(hasteMapOptions);
+
+const { hasteFS, moudleMap } = await hasteMap.build();
+
+if(!hasteFS.exists(entryPoint)){
+    throw new Error(
+        '`--entry-point` dose not exist. Please provide a path to a valid file'
+    )
+}
+
+console.log(hasteFS.getAllFiles());
+console.log(chalk.bold(`❯ Building ${chalk.blue(options.entryPoint)}`))
