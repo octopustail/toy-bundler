@@ -6,7 +6,8 @@ import { resolve } from "path";
 import chalk from "chalk";
 import yargs from "yargs";
 import Resolver from "jest-resolve";
-import { DependencyResolver } from "jest-resolve-dependencies";
+import fs from 'fs';
+
 
 const options = yargs(process.argv).argv;
 const entryPoint = resolve(process.cwd(), options.entryPoint);
@@ -41,30 +42,62 @@ const resolver = new Resolver.default(moduleMap, {
     rootDir: root,
 })
 
-const dependencyResolver = new DependencyResolver(resolver, hasteFS);
 
 
 
-console.log(dependencyResolver.resolve(entryPoint));
 
-
-const allFiles = new Set();
+const seen = new Set();
+const modules = new Map();
 const queue = [entryPoint];
 
-while(queue.length){
+while (queue.length) {
     const module = queue.shift();
-    
+
     // guard for cycles; 
-    if(allFiles.has(module)){
+    if (seen.has(module)) {
         // skip resolved dependencies rather than throw an error;
         continue;
     }
-    
-    allFiles.add(module);
-    queue.push(...dependencyResolver.resolve(module));
+
+    seen.add(module);
+
+    const dependencyMap = new Map(
+        hasteFS
+            .getDependencies(module)
+            .map(dependencyName => [
+                dependencyName,
+                resolver.resolveModule(module, dependencyName)
+            ])
+    )
+    console.log('dependencyMap', dependencyMap);
+    const code = fs.readFileSync(module, 'utf8');
+
+    const moduleBody = code.match(/module\.exports\s+=\s+(.*?);/)?.[1] || '';
+    const metadata = {
+        code: moduleBody || code,
+        dependencyMap,
+    };
+    modules.set(module, metadata);
+    queue.push(...dependencyMap.values());
 }
 
 
+
 console.log(chalk.bold(`❯ Building ${chalk.blue(entryPoint)}`))
-console.log(chalk.bold(`❯ Found ${chalk.blue(allFiles.size)} files`));
-console.log(Array.from(allFiles));
+
+console.log(chalk.bold(`❯ Serializing bundle`));
+for (const [_, metadata] of Array.from(modules).reverse()) {
+    let { code } = metadata;
+    for (const [dependencyName, dependencyPath] of metadata.dependencyMap) {
+        code = code.replace(
+            new RegExp(
+                // Escape `.` and `/`.
+                `require\\(('|")${dependencyName.replace(/[\/.]/g, '\\$&')}\\1\\)`,
+            ),
+            modules.get(dependencyPath).code
+        )
+    }
+    metadata.code = code;
+}
+
+console.log(modules.get(entryPoint).code)
